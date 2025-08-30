@@ -12,22 +12,9 @@
 
 ## 🚀 快速开始
 
-### 1. 部署到Cloudflare Workers
+详细的部署指南，包括**手动部署**和**命令行部署**，请参阅：
 
-```bash
-# 克隆项目
-git clone <repository-url>
-cd cf-llm-shadoway
-
-# 构建Worker
-npm run build
-
-# 配置环境变量（编辑wrangler.toml）
-# 修改AUTH_TOKEN为你的安全令牌
-
-# 部署
-npm run deploy
-```
+➡️ **[部署指南 (DEPLOYMENT.md)](./DEPLOYMENT.md)**
 
 ### 2. URL格式
 
