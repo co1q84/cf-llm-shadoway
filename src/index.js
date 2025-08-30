@@ -9,21 +9,35 @@ const PROVIDER_URLS = {
   'anthropic': 'https://api.anthropic.com/v1'
 };
 
-// 模型映射 - 统一模型名称到Provider原生名称
+// 模型映射 - 遵循需求文档的双层结构
 const MODEL_MAPPING = {
-  'gemini': {
-    'gemini-2.5-pro': 'models/gemini-2.0-flash-exp',
-    'gemini-2.5-flash': 'models/gemini-2.0-flash-exp',
-    'gemini-pro': 'models/gemini-pro'
+  // Claude格式输入的模型映射
+  'claude': {
+    'gemini': {
+      'gemini-2.5-pro': 'models/gemini-2.0-flash-exp',
+      'gemini-2.5-flash': 'models/gemini-2.0-flash-exp',
+    },
+    'openai': {
+      'gpt-4o': 'gpt-4o',
+    },
+    'anthropic': {
+        'claude-3-5-sonnet-20240620': 'claude-3-5-sonnet-20240620',
+    }
   },
+  // OpenAI格式输入的模型映射
   'openai': {
-    'gpt-4o': 'gpt-4o',
-    'gpt-4o-mini': 'gpt-4o-mini',
-    'gpt-4': 'gpt-4'
-  },
-  'anthropic': {
-    'claude-3-sonnet': 'claude-3-5-sonnet-20241022',
-    'claude-3-haiku': 'claude-3-5-haiku-20241022'
+    'gemini': {
+      'gemini-pro': 'models/gemini-pro',
+      'gemini-2.5-flash': 'models/gemini-2.0-flash-exp',
+    },
+    'openai': {
+      'gpt-4o': 'gpt-4o',
+      'gpt-4o-mini': 'gpt-4o-mini',
+    },
+    'anthropic': {
+      'claude-3-sonnet': 'claude-3-5-sonnet-20240620',
+      'claude-3-haiku': 'claude-3-haiku-20240725'
+    }
   }
 };
 
@@ -114,32 +128,39 @@ function getApiKey(headers) {
 async function proxyRequest(format, provider, endpoint, request, apiKey, debug) {
   const transport = new SocketTransport(debug);
   const converter = new FormatConverter();
-  
+
   // 1. 解析请求体
-  const requestBody = await request.json();
+  // 为了支流式请求，我们需要克隆请求，因为body只能被读取一次
+  const requestBody = await request.clone().json();
   
-  // 2. 模型名称映射
-  if (requestBody.model && MODEL_MAPPING[provider] && MODEL_MAPPING[provider][requestBody.model]) {
-    requestBody.model = MODEL_MAPPING[provider][requestBody.model];
+  // 2. 模型名称映射（使用新的双层结构）
+  let finalModel = requestBody.model;
+  if (requestBody.model && MODEL_MAPPING[format] && MODEL_MAPPING[format][provider] && MODEL_MAPPING[format][provider][requestBody.model]) {
+    finalModel = MODEL_MAPPING[format][provider][requestBody.model];
+    requestBody.model = finalModel; // 更新模型名称用于后续转换
   }
   
   // 3. 格式转换：输入格式 → Provider格式
-  const providerRequest = converter.convertRequest(format, provider, requestBody);
+  const providerRequest = await converter.convertRequest(format, provider, requestBody);
   
-  // 4. 构建目标URL
-  const targetUrl = `${PROVIDER_URLS[provider]}/${endpoint}`;
+  // 4. 构建目标URL (现在需要传入isStream标志)
+  const isStream = requestBody.stream === true;
+  const finalEndpoint = buildEndpoint(format, provider, endpoint, finalModel, isStream);
+  const targetUrl = `${PROVIDER_URLS[provider]}/${finalEndpoint}`;
   
   // 5. 创建代理请求
-  const proxyReq = new Request(request.url, {
+  // 注意：body现在需要被stringify，因为providerRequest是JS对象
+  const proxyReq = new Request(targetUrl, {
     method: 'POST',
-    headers: request.headers,
+    headers: request.headers, // headers将在transport层被清理
     body: JSON.stringify(providerRequest)
   });
   
   // 6. Socket传输（隐私保护）
+  // 注意：现在我们传递的是新构建的proxyReq，而不是原始request
   const providerResponse = await transport.fetch(targetUrl, proxyReq, apiKey);
   
-  // 7. 错误处理
+  // 7. 错误理
   if (!providerResponse.ok) {
     return providerResponse; // 直接返回错误响应
   }
@@ -148,36 +169,32 @@ async function proxyRequest(format, provider, endpoint, request, apiKey, debug) 
   return await converter.convertResponse(format, provider, providerResponse, requestBody);
 }
 
-// 构建目标端点URL - 根据格式和Provider确定正确的端点
-function buildEndpoint(format, provider, endpoint) {
-  // Claude格式的端点映射
-  if (format === 'claude') {
-    if (endpoint.startsWith('v1/messages')) {
-      switch (provider) {
-        case 'gemini':
-          return 'models/gemini-pro:generateContent';
-        case 'openai':
-          return 'chat/completions';
-        case 'anthropic':
-          return 'messages';
+// 构建目标端点URL - 修复了Gemini路径重写BUG，增强了路径透传能力
+function buildEndpoint(format, provider, endpoint, model, isStream) {
+  // 规则映射表，用于需要特殊处理的端点
+  const endpointRules = {
+    'gemini': {
+      'chat/completions': { action: isStream ? 'streamGenerateContent' : 'generateContent', needsModel: true },
+      'messages': { action: isStream ? 'streamGenerateContent' : 'generateContent', needsModel: true },
+      'embedContent': { action: 'embedContent', needsModel: true },
+      'embedText': { action: 'embedText', needsModel: true }, // 兼容旧版
+    }
+  };
+
+  const rules = endpointRules[provider];
+  if (rules) {
+    for (const pathSuffix in rules) {
+      if (endpoint.endsWith(pathSuffix)) {
+        const rule = rules[pathSuffix];
+        // 保留原始路径前缀，只替换或附加必要部分
+        const basePath = endpoint.substring(0, endpoint.length - pathSuffix.length);
+        const modelPath = rule.needsModel ? `models/${model}` : '';
+        return `${basePath}${modelPath}:${rule.action}`;
       }
     }
   }
-  
-  // OpenAI格式的端点映射
-  if (format === 'openai') {
-    if (endpoint.startsWith('v1/chat/completions')) {
-      switch (provider) {
-        case 'gemini':
-          return 'models/gemini-pro:generateContent';
-        case 'openai':
-          return 'chat/completions';
-        case 'anthropic':
-          return 'messages';
-      }
-    }
-  }
-  
-  // 默认直接使用原始端点
+
+  // 默认情况下，对有provider都进行更健壮的路径透传
+  // 例如支持 /v1/embeddings 等API
   return endpoint;
 }
