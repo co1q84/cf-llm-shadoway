@@ -1,0 +1,25 @@
+{
+  "name": "cf-llm-shadoway",
+  "version": "1.0.0",
+  "description": "CF LLM Shadoway - Claude格式与OpenAI格式统一代理，支持Socket隐私保护",
+  "main": "src/index.js",
+  "license": "MIT",
+  "scripts": {
+    "dev": "wrangler dev --port 8080",
+    "deploy": "wrangler deploy",
+    "build": "node build.js"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "wrangler": "^3.0.0"
+  },
+  "keywords": [
+    "ai",
+    "proxy", 
+    "claude",
+    "openai",
+    "cloudflare-workers",
+    "privacy"
+  ],
+  "author": "AI Proxy Team"
+}
